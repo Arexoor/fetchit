@@ -1,5 +1,10 @@
 # FetchIt
 
+> **Experimental fork:** Podman 6 snapshot development lives on
+> [`experimental/podman6-snapshot`](https://github.com/Arexoor/fetchit/tree/experimental/podman6-snapshot).
+> See [build recipes, limitations and upstream integration workflow](build/podman6/README.md).
+> This is not an official upstream release or a claim of general Podman 6 support.
+
 FetchIt brings GitOps to hosts running Podman. Define containers, pods, host
 services, or files in Git, and FetchIt reconciles them on a configured schedule—
 without requiring a Kubernetes cluster.

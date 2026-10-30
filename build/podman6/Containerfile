@@ -1,0 +1,21 @@
+# Experimental Podman 6 build; source snapshot is copied from the patched worktree.
+FROM docker.io/library/golang@sha256:cd9a32216aee5667f957a62d13a10032a63fd58e14b3f3d9cc8c2122f501e95e AS builder
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=1500MiB
+WORKDIR /src
+COPY source/ ./
+RUN go version && go build -p=2 -mod=readonly -buildvcs=false -trimpath -tags 'include_gcs include_oss containers_image_openpgp gssapi providerless netgo osusergo exclude_graphdriver_btrfs' -ldflags '-s -w' -o /out/fetchit ./cmd/fetchit
+RUN wget -O /out/sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64 && printf 'e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  /out/sops\n' | sha256sum -c - && chmod 0755 /out/sops
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:bba2b4bbf0ed15cfe7dd72a1e17ae7d2015a141f306b304e1a2785c41400e39c
+RUN microdnf -y install rsync tar coreutils-single util-linux findutils grep sed device-mapper-libs libseccomp && command -v chroot && command -v flock && microdnf clean all
+COPY --from=builder /out/fetchit /usr/local/bin/fetchit
+COPY --from=builder /out/sops /usr/local/bin/sops
+COPY source/licenses/sops/LICENSE /usr/share/licenses/sops/LICENSE
+COPY source/scripts/entry.sh /usr/local/bin/entry.sh
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision="$SOURCE_REVISION" \
+      io.fetchit.experimental.podman6="true" \
+      io.fetchit.source.modified="pkg/engine/quadlet-host.sh" \
+      io.fetchit.build.method="Go1.27.1-static-direct-CGO_ENABLED=0"
+WORKDIR /opt
+CMD ["entry.sh"]

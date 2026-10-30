@@ -42,9 +42,15 @@ if [ "$removal" != true ] && [ -f "$host$control/receipt" ]; then
 fi
 
 version=$(hostcmd podman --version)
-case "$version" in *'version 5.'*) ;; *) fail "Quadlet requires host Podman 5.7 or newer within major 5: $version";; esac
-minor=$(printf '%s' "$version" | sed -n 's/.*version 5\.\([0-9]*\).*/\1/p')
-[ "$minor" -ge 7 ] || fail "Quadlet requires Podman >=5.7 and <6"
+# Experimental local test build only: Podman 6 acceptance is not upstream support.
+case "$version" in
+ *'version 5.'*)
+  minor=$(printf '%s' "$version" | sed -n 's/.*version 5\.\([0-9]*\).*/\1/p')
+  [ "$minor" -ge 7 ] || fail "Quadlet requires Podman >=5.7"
+  ;;
+ *'version 6.'*) echo 'Experimental FetchIt test build: allowing host Podman 6' >&2 ;;
+ *) fail "Quadlet test build requires host Podman 5.7+ within major 5, or experimental major 6: $version" ;;
+esac
 [ "$(hostcmd stat -fc %T /sys/fs/cgroup)" = cgroup2fs ] || fail "Quadlet requires cgroup v2"
 generator=/usr/lib/systemd/system-generators/podman-system-generator
 [ -x "$host$generator" ] || fail "Host Quadlet generator missing: $generator"

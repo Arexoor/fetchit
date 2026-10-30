@@ -1,0 +1,8 @@
+.git
+build.log
+verify.log
+image.id
+image-inspect.json
+verification.json
+fetchit
+*.oci.tar
