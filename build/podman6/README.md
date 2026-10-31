@@ -50,6 +50,31 @@ apply/remove, engine API/Git reconciliation, no-op, invalid-candidate retention,
 offline recovery and reboot behavior in a disposable environment. Keep machine
 addresses, credentials and deployment evidence outside this public fork.
 
+## Optional native rootless helper regression
+
+The reusable `tests/test_native_rootless_helper.py` covers native helper
+apply, generator output, SourcePath ownership, inactive state, receipt and
+removal with a random owned namespace. It replaces a deployment-local,
+hardcoded experiment; no deployment config, VM addresses, credentials or
+private evidence are included. Existing version-gate/snapshot tests already
+cover the portable baseline/build aspects, so those were not duplicated.
+
+On a disposable host, log in as the rootless test user (not root), with HOME,
+XDG_RUNTIME_DIR and the user bus configured. Require cgroup v2, active user
+Podman socket, SELinux Enforcing and a preloaded compatible helper image:
+
+```sh
+FETCHIT_NATIVE_HELPER_IMAGE=<preloaded-image-reference> python3 tests/test_native_rootless_helper.py
+```
+
+The test executes this checkout's helper script inside that image. It does not
+build/pull/start workloads or exercise the Go engine/API/Git path. It creates
+short-lived administration helper containers (per-helper label disable,
+host mounts), installs an inactive random Quadlet, then removes only its owned
+containers/paths and reloads the user manager. Do not run on a production host.
+Without the environment opt-in it skips. Outputs omit shared host inventories.
+Run portable tests using `python3 -m unittest discover -s tests -p 'test_*.py' -v`.
+
 ## Runtime caveats
 
 Set Quadlet `helperImage` to the verified immutable image reference. The upstream
