@@ -306,7 +306,14 @@ func TestQuadletFailureDoesNotAdvanceAppliedCommit(t *testing.T) {
 		t.Fatalf("advanced failed commit: %s", applied)
 	}
 	calls := 0
-	q.runHost = func(context.Context, context.Context, quadletPlan) error { calls++; return nil }
+	q.runHost = func(_ context.Context, _ context.Context, p quadletPlan) error {
+		if p.receipt != nil {
+			*p.receipt = "FETCHIT_RECEIPT absent"
+			return nil
+		}
+		calls++
+		return nil
+	}
 	if err := q.Apply(context.Background(), context.Background(), old, old, nil); err != nil {
 		t.Fatal(err)
 	}

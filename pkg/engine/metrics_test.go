@@ -234,7 +234,11 @@ func TestMetricsQuadletForcedReplayMustSucceed(t *testing.T) {
 	mirrorCommit(t, source, "bundle")
 	q := &Quadlet{CommonMethod: CommonMethod{Name: "quadlet", TargetPath: "bundle", target: target, initialRun: true}, Root: true}
 	fail := false
-	q.runHost = func(context.Context, context.Context, quadletPlan) error {
+	q.runHost = func(_ context.Context, _ context.Context, p quadletPlan) error {
+		if p.receipt != nil {
+			*p.receipt = "FETCHIT_RECEIPT absent"
+			return nil
+		}
 		if fail {
 			return errors.New("replay failed")
 		}

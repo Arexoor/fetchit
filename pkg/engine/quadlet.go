@@ -36,20 +36,23 @@ var quadletHostScript string
 // Quadlet deploys a dedicated Git directory as a host-managed Quadlet bundle.
 // Rootless deployments require explicit host paths; container HOME/UID are not used.
 type Quadlet struct {
-	CommonMethod   `mapstructure:",squash"`
-	Root           bool   `mapstructure:"root"`
-	Start          bool   `mapstructure:"start"`
-	Restart        bool   `mapstructure:"restart"`
-	HostHome       string `mapstructure:"hostHome"`
-	HostConfigHome string `mapstructure:"hostConfigHome"`
-	HostRuntimeDir string `mapstructure:"hostRuntimeDir"`
-	HelperImage    string `mapstructure:"helperImage"`
-	runHost        func(context.Context, context.Context, quadletPlan) error
-	dirty          bool
-	forceReconcile bool
+	CommonMethod    `mapstructure:",squash"`
+	Root            bool   `mapstructure:"root"`
+	Start           bool   `mapstructure:"start"`
+	Restart         bool   `mapstructure:"restart"`
+	HostHome        string `mapstructure:"hostHome"`
+	HostConfigHome  string `mapstructure:"hostConfigHome"`
+	HostRuntimeDir  string `mapstructure:"hostRuntimeDir"`
+	HelperImage     string `mapstructure:"helperImage"`
+	runHost         func(context.Context, context.Context, quadletPlan) error
+	dirty           bool
+	forceReconcile  bool
+	expectedReceipt string
 }
 
 type quadletBundle struct {
+	// Git tree identity covers recursive content, paths, and executable modes.
+	treeID          plumbing.Hash
 	files           map[string][]byte
 	modes           map[string]int64
 	services        []string
@@ -57,6 +60,10 @@ type quadletBundle struct {
 }
 
 type quadletPlan struct {
+	// receipt selects read-only inspection; expectedReceipt binds apply to it.
+	receipt         *string
+	expectedReceipt string
+	unchangedTree   bool
 	removal         bool
 	previous        quadletBundle
 	desired         quadletBundle
@@ -67,6 +74,7 @@ type quadletPlan struct {
 	current         string
 	desiredRevision string
 	configID        string
+	lifecycleID     string
 }
 
 var quadletSafeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:@-]*$`)
@@ -76,13 +84,70 @@ func (q *Quadlet) GetKind() string { return quadletMethod }
 // GetName includes bundle identity and settings so config reloads have distinct
 // applied tags, while host ownership remains stable across activation changes.
 func (q *Quadlet) GetName() string {
+	return q.settingsID(q.HelperImage)
+}
+
+// The helper is only a transport for the controller-embedded script. It is not
+// workload configuration. Keep its reference in the applied tag, but allow a
+// verified host receipt to adopt a helper-only change without restarting apps.
+func (q *Quadlet) settingsID(helper string) string {
 	url, branch := "", ""
 	if q.target != nil {
 		url = q.target.url
 		branch = q.target.branch
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%s\x00%s\x00%s\x00%t\x00%t\x00%s", url, branch, q.GetTargetPath(), q.Root, q.HostHome, q.HostConfigHome, q.HostRuntimeDir, q.Start, q.Restart, q.HelperImage)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%s\x00%s\x00%s\x00%t\x00%t\x00%s", url, branch, q.GetTargetPath(), q.Root, q.HostHome, q.HostConfigHome, q.HostRuntimeDir, q.Start, q.Restart, helper)))
 	return fmt.Sprintf("%s-%x", q.Name, sum[:6])
+}
+
+// hostBaseline reads a locked host receipt before planning. The receipt is
+// authoritative only inside this method's ownership namespace, and its commit
+// and recorded tree must validate locally. No stale-plan failure is retried
+// using a new snapshot within this reconciliation.
+func (q *Quadlet) hostBaseline(ctx, conn context.Context) (plumbing.Hash, string, error) {
+	parent, runtime, err := q.paths()
+	if err != nil {
+		return plumbing.ZeroHash, "", err
+	}
+	namespace, home := q.hostIdentity()
+	var receipt string
+	run := q.runHost
+	if run == nil {
+		run = q.deploy
+	}
+	if err := run(ctx, conn, quadletPlan{parent: parent, runtime: runtime, namespace: namespace, home: home, receipt: &receipt}); err != nil {
+		return plumbing.ZeroHash, "", err
+	}
+	invalid := fmt.Errorf("invalid Quadlet recovery receipt")
+	if len(receipt) > 640 {
+		return plumbing.ZeroHash, "", invalid
+	}
+	fields := strings.Fields(receipt)
+	if len(fields) == 2 && fields[0] == "FETCHIT_RECEIPT" && fields[1] == "absent" {
+		return plumbing.ZeroHash, "absent", nil
+	}
+	if (len(fields) != 4 && len(fields) != 6) || fields[0] != "FETCHIT_RECEIPT" {
+		return plumbing.ZeroHash, "", invalid
+	}
+	hex40 := regexp.MustCompile(`^[0-9a-f]{40}$`)
+	identity := regexp.MustCompile(`^` + regexp.QuoteMeta(q.Name) + `-[0-9a-f]{12}$`)
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(fields[1]) || !hex40.MatchString(fields[2]) || !identity.MatchString(fields[3]) {
+		return plumbing.ZeroHash, "", invalid
+	}
+	revision := plumbing.NewHash(fields[2])
+	bundle, err := q.bundle(revision)
+	if err != nil {
+		return plumbing.ZeroHash, "", fmt.Errorf("Quadlet recovery commit unavailable or invalid")
+	}
+	if len(fields) == 6 && (!identity.MatchString(fields[4]) || !hex40.MatchString(fields[5]) || bundle.treeID.String() != fields[5] || (fields[3] == q.GetName() && fields[4] != q.settingsID(""))) {
+		return plumbing.ZeroHash, "", invalid
+	}
+	// A legacy receipt has no tree/lifecycle proof: only the exact config may
+	// recover it; activation still goes through the normal locked helper.
+	if len(fields) == 4 && fields[3] != q.GetName() {
+		return plumbing.ZeroHash, "", invalid
+	}
+	return revision, fields[1], nil
 }
 
 func (q *Quadlet) reconcile(ctx, conn context.Context) error {
@@ -96,6 +161,12 @@ func (q *Quadlet) reconcile(ctx, conn context.Context) error {
 			localDevicePull(getDirectory(target), target.device, "", false)
 		}
 	}
+	// Snapshot before selecting desired: an overlapping old poll must not
+	// adopt a newer receipt after it already selected an older desired commit.
+	baseline, token, err := q.hostBaseline(ctx, conn)
+	if err != nil {
+		return err
+	}
 	latest, err := getLatest(target)
 	if err != nil {
 		return err
@@ -106,13 +177,19 @@ func (q *Quadlet) reconcile(ctx, conn context.Context) error {
 		return err
 	}
 	observeGit(ctx, "out_of_sync", false)
-	q.forceReconcile = q.initialRun || q.dirty
+	appliedTag := current
+	if token != "absent" {
+		current = baseline
+	}
+	q.expectedReceipt = token
+	// Even equal commits must check the snapshot and pending journal under lock.
+	q.forceReconcile = true
+	defer func() { q.forceReconcile = false; q.expectedReceipt = "" }()
 	err = applyWithRecovery(ctx, conn, q, current, latest, nil)
-	q.forceReconcile = false
 	if err != nil {
 		return err
 	}
-	if latest != current {
+	if latest != appliedTag {
 		if err := updateCurrent(ctx, target, latest, q.GetKind(), q.GetName()); err != nil {
 			return err
 		}
@@ -202,6 +279,7 @@ func (q *Quadlet) bundle(hash plumbing.Hash) (quadletBundle, error) {
 		return b, err
 	}
 
+	b.treeID = tree.Hash
 	var total int64
 	err = tree.Files().ForEach(func(f *object.File) error {
 		if f.Mode != filemode.Regular && f.Mode != filemode.Executable {
@@ -314,7 +392,7 @@ func (q *Quadlet) Apply(ctx, conn context.Context, current, desired plumbing.Has
 	}
 
 	namespace, home := q.hostIdentity()
-	plan := quadletPlan{previous: old, desired: next, parent: parent, runtime: runtime, namespace: namespace, home: home, current: current.String(), desiredRevision: desired.String(), configID: q.GetName()}
+	plan := quadletPlan{expectedReceipt: q.expectedReceipt, unchangedTree: !current.IsZero() && old.treeID == next.treeID, previous: old, desired: next, parent: parent, runtime: runtime, namespace: namespace, home: home, current: current.String(), desiredRevision: desired.String(), configID: q.GetName(), lifecycleID: q.settingsID("")}
 	run := q.runHost
 	if run == nil {
 		run = q.deploy
@@ -388,7 +466,11 @@ func (q *Quadlet) deploy(ctx, conn context.Context, p quadletPlan) (resultErr er
 	if q.Restart {
 		restartUnits = strings.Join(p.desired.restartServices, "\n")
 	}
-	s.Command = []string{"-ceu", quadletHostScript, "quadlet", p.parent, p.runtime, p.namespace, strings.Join(p.previous.services, "\n"), strings.Join(p.desired.services, "\n"), fmt.Sprint(q.Start || q.Restart), restartUnits, p.current, p.desiredRevision, p.configID, fmt.Sprint(p.removal)}
+	operation := "apply"
+	if p.receipt != nil {
+		operation = "inspect"
+	}
+	s.Command = []string{"-ceu", quadletHostScript, "quadlet", p.parent, p.runtime, p.namespace, strings.Join(p.previous.services, "\n"), strings.Join(p.desired.services, "\n"), fmt.Sprint(q.Start || q.Restart), restartUnits, p.current, p.desiredRevision, p.configID, fmt.Sprint(p.removal), fmt.Sprint(p.unchangedTree), p.lifecycleID, p.desired.treeID.String(), operation, p.expectedReceipt}
 	s.Env = map[string]string{"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": p.home}
 	if p.runtime != "" {
 		s.Env["XDG_CONFIG_HOME"] = p.parent
@@ -423,20 +505,30 @@ func (q *Quadlet) deploy(ctx, conn context.Context, p quadletPlan) (resultErr er
 	if err != nil {
 		return err
 	}
-	// Consume logs concurrently so generator diagnostics cannot block the API reader.
+	// Drain without logging raw host output: generator/systemd diagnostics can
+	// contain inline credentials. Inspection accepts only a bounded protocol
+	// record, validated by hostBaseline; application emits a generic status.
 	logs := make(chan string)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		seen := false
 		for line := range logs {
-			logger.Infof("Quadlet %s: %s", q.Name, strings.TrimSpace(line))
+			if p.receipt != nil && strings.HasPrefix(line, "FETCHIT_RECEIPT ") {
+				if seen || len(line) > 640 {
+					*p.receipt = "invalid"
+				} else {
+					*p.receipt = strings.TrimSpace(line)
+				}
+				seen = true
+			}
 		}
 	}()
 	logErr := containers.Logs(conn, created.ID, new(containers.LogOptions).WithStdout(true).WithStderr(true), logs, logs)
 	close(logs)
 	<-done
 	if code != 0 {
-		return fmt.Errorf("Quadlet helper exited with status %d (see generator/systemd diagnostics)", code)
+		return fmt.Errorf("Quadlet helper exited with status %d; inspect private host diagnostics", code)
 	}
 	return logErr
 }

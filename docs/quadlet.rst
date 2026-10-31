@@ -138,6 +138,39 @@ so no changes to the legacy Systemd helper image are required.
 Updates, removal, and recovery
 ------------------------------
 
+Change detection is scoped to the complete ``targetPath`` subtree, not to the
+repository commit. FetchIt compares go-git tree object IDs (the Git equivalent of
+an empty recursive diff): names, additions/deletions, nested contents, ciphertext,
+and Git executable bits all contribute. This uses existing commit objects and
+never invokes shell Git with an interpolated path. All candidate bundles still
+pass the normal path, size, file-type and source-name validation before planning.
+
+An unrelated commit still reaches the host helper, but a matching applied
+receipt permits only an atomic receipt update under the namespace ownership lock,
+without copying files, daemon-reload, or service restarts. The Git applied tag
+advances only after that succeeds. The helper retains compare-and-set checks;
+a missing receipt or pending partial operation takes the full reconciliation path.
+Startup rechecks the receipt even when Git has not changed. This is not periodic
+host drift detection: a receipt is evidence of a successful managed operation,
+not a live filesystem or application-health audit.
+
+New receipts additionally record the lifecycle settings identity and Git subtree
+ID. ``helperImage`` remains part of the applied configuration tag, but is excluded
+from the lifecycle identity: the controller supplies the embedded script and the
+image supplies its execution tools, not application configuration. A helper-only
+reference change can adopt a matching tree/lifecycle receipt without restarting
+apps; this does not assert that two helper images have identical bytes. Host paths,
+root mode, start/restart settings and bundle/repository identity remain significant.
+Old two-line receipts remain readable; helper-only changes without the new proof
+conservatively reconcile. Same-settings, unchanged-tree updates can upgrade the
+receipt without a restart. Initial deployment without a receipt always reconciles.
+
+When any bundle file changes, all eligible workload services in that bundle are
+reconciled according to ``start``/``restart``; no per-service dependency graph is
+introduced. Changes to a volume definition therefore reconcile the bundle but
+**do not migrate or replace an existing volume**. Inspect resource semantics and
+perform any migration explicitly. FetchIt never prunes or removes volume data.
+
 FetchIt stops removed services before deleting their source files. Renaming a
 file or changing ``ServiceName=`` retires the old service. It refuses to overwrite
 a service owned outside the method's bundle. Removing the complete selected
