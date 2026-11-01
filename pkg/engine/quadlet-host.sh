@@ -6,7 +6,7 @@
 # Service lists use newlines. New fields are optional for legacy callers.
 [ "$#" -ge 10 ] && [ "$#" -le 16 ] || { echo "Expected ten to sixteen Quadlet helper arguments" >&2; exit 1; }
 operation=${15:-apply} expected_receipt=${16:-}
-case "$operation" in apply|inspect) ;; *) echo 'Invalid Quadlet operation' >&2; exit 1;; esac
+case "$operation" in apply|inspect|validate) ;; *) echo 'Invalid Quadlet operation' >&2; exit 1;; esac
 parent=$1 runtime=$2 namespace=$3 old_services=$4 new_services=$5 start=$6 restart_units=$7 current=$8 desired_revision=$9 config_id=${10}
 removal=${11:-false}
 unchanged_tree=${12:-false}
@@ -65,7 +65,7 @@ if [ -n "$expected_receipt" ] && [ "$expected_receipt" != "$receipt_token" ]; th
 fi
 # Compare-and-set the applied receipt under the lock. A stale process must not
 # replace a newer commit. A new settings identity may initialize its own Git tag.
-if [ "$removal" != true ] && [ -f "$host$control/receipt" ]; then
+if [ "$operation" = apply ] && [ "$removal" != true ] && [ -f "$host$control/receipt" ]; then
  installed_revision=$(sed -n '1p' "$host$control/receipt")
  installed_config=$(sed -n '2p' "$host$control/receipt")
  installed_lifecycle=$(sed -n '3p' "$host$control/receipt")
@@ -124,11 +124,31 @@ fi
 printf '%s\n' "$new_services" | while IFS= read -r unit; do
  [ -n "$unit" ] || continue
  grep -F -- "---$unit---" "$host$control/validation.log" >/dev/null || fail 'Quadlet validation incomplete; inspect private host validation.log'
- # Do not replace units managed outside this bundle.
+ # Preflight may release names from explicitly retiring sibling namespaces.
+ # Apply never accepts this exception; it rechecks ownership after retirement.
  source=$(systemctl_cmd show "$unit" --property=SourcePath --value)
  fragment=$(systemctl_cmd show "$unit" --property=FragmentPath --value)
- case "$source" in "$live/"*) ;; '') [ -z "$fragment" ] || fail "Service already exists outside bundle: $unit" ;; *) fail "Service belongs to another bundle: $unit ($source)";; esac
+ case "$source" in
+  "$live/"*) ;;
+  '') [ -z "$fragment" ] || fail "Service already exists outside bundle: $unit" ;;
+  *)
+   allowed=false
+   if [ "$operation" = validate ]; then
+    while IFS= read -r retiring; do
+     [ -n "$retiring" ] || continue
+     case "$retiring" in *[!a-zA-Z0-9_.-]*) fail 'Invalid retiring namespace';; esac
+     retiring_live="$parent/systemd/$retiring"
+     [ -z "$runtime" ] || retiring_live="$parent/containers/systemd/$retiring"
+     case "$source" in "$retiring_live/"*) allowed=true;; esac
+    done <<EOF
+${FETCHIT_QUADLET_RETIRING_NAMESPACES:-}
+EOF
+   fi
+   [ "$allowed" = true ] || fail "Service belongs to another bundle: $unit ($source)"
+   ;;
+ esac
 done
+[ "$operation" != validate ] || exit 0
 # pending contains names from a prior incomplete application, even if Git changed.
 {
  printf '%s\n' "$old_services"

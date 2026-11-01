@@ -270,6 +270,9 @@ func decodeConfigExactly(data []byte) error {
 		return err
 	}
 	var config FetchitConfig
+	if err := validateQuadletScanDepth(v); err != nil {
+		return err
+	}
 	if err := v.UnmarshalExact(&config); err != nil {
 		return err
 	}

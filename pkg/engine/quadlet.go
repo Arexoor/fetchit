@@ -37,6 +37,7 @@ var quadletHostScript string
 // Rootless deployments require explicit host paths; container HOME/UID are not used.
 type Quadlet struct {
 	CommonMethod    `mapstructure:",squash"`
+	ScanDepth       int    `mapstructure:"scanDepth"`
 	Root            bool   `mapstructure:"root"`
 	Start           bool   `mapstructure:"start"`
 	Restart         bool   `mapstructure:"restart"`
@@ -48,6 +49,7 @@ type Quadlet struct {
 	dirty           bool
 	forceReconcile  bool
 	expectedReceipt string
+	subtarget       bool
 }
 
 type quadletBundle struct {
@@ -60,6 +62,7 @@ type quadletBundle struct {
 }
 
 type quadletPlan struct {
+	command []string // optional parent orchestration; embedded scripts only
 	// receipt selects read-only inspection; expectedReceipt binds apply to it.
 	receipt         *string
 	expectedReceipt string
@@ -91,6 +94,9 @@ func (q *Quadlet) GetName() string {
 // workload configuration. Keep its reference in the applied tag, but allow a
 // verified host receipt to adopt a helper-only change without restarting apps.
 func (q *Quadlet) settingsID(helper string) string {
+	if q.ScanDepth != 0 {
+		helper += fmt.Sprintf("\x00scanDepth=%d", q.ScanDepth)
+	}
 	url, branch := "", ""
 	if q.target != nil {
 		url = q.target.url
@@ -160,6 +166,9 @@ func (q *Quadlet) reconcile(ctx, conn context.Context) error {
 		} else if target.device != "" {
 			localDevicePull(getDirectory(target), target.device, "", false)
 		}
+	}
+	if q.ScanDepth > 0 {
+		return q.reconcileSubtargets(ctx, conn)
 	}
 	// Snapshot before selecting desired: an overlapping old poll must not
 	// adopt a newer receipt after it already selected an older desired commit.
@@ -231,6 +240,12 @@ func (q *Quadlet) MethodEngine(context.Context, context.Context, *object.Change,
 }
 
 func (q *Quadlet) paths() (string, string, error) {
+	if q.ScanDepth > 0 && q.target != nil && (q.target.rollback || q.target.trackBadCommits) {
+		return "", "", fmt.Errorf("Quadlet scanDepth does not support target rollback or bad-commit tracking")
+	}
+	if q.ScanDepth < 0 {
+		return "", "", fmt.Errorf("Quadlet scanDepth must be nonnegative")
+	}
 	if len(q.Name) > 64 || !quadletSafeName.MatchString(q.Name) || strings.Contains(q.Name, "@") || strings.Contains(q.Name, ":") {
 		return "", "", fmt.Errorf("invalid Quadlet method name %q", q.Name)
 	}
@@ -279,6 +294,18 @@ func (q *Quadlet) bundle(hash plumbing.Hash) (quadletBundle, error) {
 		return b, err
 	}
 
+	if q.subtarget {
+		selected := false
+		for _, entry := range tree.Entries {
+			if entry.Mode != filemode.Dir && path.Ext(entry.Name) == ".container" {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			return b, nil
+		}
+	}
 	b.treeID = tree.Hash
 	var total int64
 	err = tree.Files().ForEach(func(f *object.File) error {
@@ -369,7 +396,7 @@ func (q *Quadlet) bundle(hash plumbing.Hash) (quadletBundle, error) {
 }
 
 func (q *Quadlet) Apply(ctx, conn context.Context, current, desired plumbing.Hash, _ *[]string) error {
-	if desired.IsZero() && current.IsZero() {
+	if desired.IsZero() && current.IsZero() && !q.subtarget {
 		return nil
 	}
 	parent, runtime, err := q.paths()
@@ -384,7 +411,7 @@ func (q *Quadlet) Apply(ctx, conn context.Context, current, desired plumbing.Has
 	if err != nil {
 		return err
 	}
-	if len(next.services) == 0 && current.IsZero() {
+	if len(next.services) == 0 && current.IsZero() && !q.subtarget {
 		return fmt.Errorf("Quadlet bundle contains no supported source units")
 	}
 	if current == desired && !q.forceReconcile {
@@ -409,7 +436,11 @@ func (q *Quadlet) hostIdentity() (string, string) {
 	if q.Root {
 		home = "/root"
 	}
-	return fmt.Sprintf("fetchit-%s-%x", q.Name, sum[:6]), home
+	namespace := fmt.Sprintf("fetchit-%s-%x", q.Name, sum[:6])
+	if q.ScanDepth > 0 {
+		namespace += "-scan"
+	}
+	return namespace, home
 }
 
 func quadletArchive(files map[string][]byte, modes map[string]int64) ([]byte, error) {
@@ -471,6 +502,9 @@ func (q *Quadlet) deploy(ctx, conn context.Context, p quadletPlan) (resultErr er
 		operation = "inspect"
 	}
 	s.Command = []string{"-ceu", quadletHostScript, "quadlet", p.parent, p.runtime, p.namespace, strings.Join(p.previous.services, "\n"), strings.Join(p.desired.services, "\n"), fmt.Sprint(q.Start || q.Restart), restartUnits, p.current, p.desiredRevision, p.configID, fmt.Sprint(p.removal), fmt.Sprint(p.unchangedTree), p.lifecycleID, p.desired.treeID.String(), operation, p.expectedReceipt}
+	if len(p.command) > 0 {
+		s.Command = p.command
+	}
 	s.Env = map[string]string{"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": p.home}
 	if p.runtime != "" {
 		s.Env["XDG_CONFIG_HOME"] = p.parent
@@ -515,7 +549,11 @@ func (q *Quadlet) deploy(ctx, conn context.Context, p quadletPlan) (resultErr er
 		seen := false
 		for line := range logs {
 			if p.receipt != nil && strings.HasPrefix(line, "FETCHIT_RECEIPT ") {
-				if seen || len(line) > 640 {
+				limit := 640
+				if len(p.command) > 0 {
+					limit = 1 << 20
+				}
+				if seen || len(line) > limit {
 					*p.receipt = "invalid"
 				} else {
 					*p.receipt = strings.TrimSpace(line)

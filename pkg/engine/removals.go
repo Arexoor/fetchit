@@ -329,6 +329,9 @@ func removeOwnedWorkloads(conn context.Context, r removalReceipt) error {
 			return errors.New("missing Quadlet removal identity")
 		}
 		method := &Quadlet{HelperImage: q.HelperImage}
+		if strings.HasSuffix(q.Namespace, "-scan") {
+			return method.deploy(context.Background(), conn, subgroupRemovalPlan(q.Parent, q.Runtime, q.Namespace, q.Home))
+		}
 		return method.deploy(context.Background(), conn, quadletPlan{previous: quadletBundle{}, desired: quadletBundle{files: map[string][]byte{}, modes: map[string]int64{}}, parent: q.Parent, runtime: q.Runtime, namespace: q.Namespace, home: q.Home, current: "0000000000000000000000000000000000000000", desiredRevision: "0000000000000000000000000000000000000000", configID: "removal", removal: true})
 	default:
 		return errors.New("unsupported removal receipt")

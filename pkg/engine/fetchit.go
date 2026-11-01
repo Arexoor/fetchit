@@ -154,6 +154,9 @@ func readConfig(v *viper.Viper) (*FetchitConfig, bool, error) {
 	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err == nil {
+		if err := validateQuadletScanDepth(v); err != nil {
+			return nil, false, err
+		}
 		if err := v.Unmarshal(&config); err != nil {
 			logger.Info("Error with unmarshal of existing config file: %v", err)
 			return nil, false, err

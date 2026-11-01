@@ -122,6 +122,33 @@ See [Running](docs/running.rst) for rootful launches, engine systemd services, a
 host identity settings. See [Quadlet](docs/quadlet.rst) for rootless/rootful bundle
 examples. FileTransfer destinations must already exist on the host.
 
+### Discover independent Quadlet groups
+
+```yaml
+targetConfigs:
+  - name: applications
+    url: https://github.com/your-org/homelab.git
+    branch: main
+    quadlet:
+      - name: applications
+        schedule: "*/1 * * * *"
+        targetPath: services
+        scanDepth: 1
+        root: true
+        start: true
+        restart: true
+```
+
+This rootful example polls `services` for direct child directories containing a
+direct `.container` file. Each is reconciled independently; a parent README
+change does not restart applications. `scanDepth` defaults to `0` (the existing
+exact-directory mode). Positive depths select disjoint group roots at depths
+1 through N, never the parent itself. `targetPath: service` would instead select
+that exact configured directory—there is no naming convention or pluralization.
+See [discovery semantics and recovery limits](docs/quadlet.rst) for rootless host
+paths, removal/data retention, nested-unit validation, and unsupported automatic
+rollback in discovery mode.
+
 ### Stop the demonstration
 
 ```sh

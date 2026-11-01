@@ -60,6 +60,90 @@ Boot activation comes from the source unit's ``[Install]`` section, for example
 for a user service. FetchIt does not run ``systemctl enable`` for generated units.
 ``start: false`` does not remove boot activation specified by ``[Install]``.
 
+Automatic subgroup discovery
+----------------------------
+
+Set ``scanDepth`` on a **Quadlet method**, not on the Git target or other method
+kinds. The default ``0`` retains exact-directory behavior, including source units
+at ``targetPath`` itself. A positive depth instead treats ``targetPath`` as a
+parent and discovers independent groups on **every scheduled Git poll**:
+
+.. code-block:: yaml
+
+   targetConfigs:
+     - name: applications
+       url: https://github.com/your-org/homelab.git
+       branch: main
+       quadlet:
+         - name: applications
+           schedule: "*/1 * * * *"
+           targetPath: services
+           scanDepth: 1
+           root: true
+           start: true
+           restart: true
+           cleanupOnRemoval: true
+
+The example's directory name is arbitrary: ``targetPath: service`` selects
+``service`` exactly; FetchIt does not pluralize or otherwise rename it. For
+rootless operation replace ``root: true`` with the explicit host paths below.
+No per-child configuration entries are created.
+
+* ``scanDepth: 1`` examines direct child directories only. A child qualifies only
+  when it contains a **direct** ``.container`` file. ``services/a/a.container``
+  selects ``services/a``; ``services/a/deep/a.container`` does not select it.
+* ``scanDepth: N`` considers depths 1 through N inclusive, counting directory
+  edges below the parent. The parent itself is never selected in scanning mode.
+  The value must be a nonnegative YAML integer representable by the controller;
+  booleans, quoted numbers, fractional values and negative values are rejected.
+  There is no arbitrary depth cap; traversal is iterative.
+* Stop descending when a group root is found, so groups never overlap. All of
+  that group's recursive content remains part of its bundle tree. A nested
+  Quadlet source unit inside an already selected group is still a validation
+  error, not a second group or silently ignored file.
+* A directory containing only ``.volume`` / ``.network`` files is not a group.
+  Those files are included when a sibling ``.container`` exists. Removing the
+  final direct ``.container`` retires the **whole** group, even if supporting
+  files or resource definitions remain. Removing the directory has the same
+  effect. Owned runtime units and deployed supporting files are cleaned up;
+  persistent data volumes are not deleted.
+* An empty/missing parent is idle, not disabled: subsequent polls discover new
+  groups automatically. Files outside selected groups, including a parent
+  README, do not restart groups. Recursive config, drop-in, executable-mode or
+  encrypted-credential changes restart only the affected group when enabled.
+
+Each poll fetches one desired Git revision. Deterministic, bounded child names
+include a digest of the parent identity and child path. Folder renames are
+remove/add operations, never implicit ownership or credential-namespace
+migrations. Generated systemd service names and container names must still be
+unique on the host: separate ownership directories are not systemd namespaces.
+Groups must not rely on cross-group restart ordering.
+
+The host keeps a private parent inventory and per-child ownership receipts.
+The parent inventory is read before fetching Git, then checked under a parent
+lock. A write-ahead inventory records all old/new child paths before applying
+any group; a unique transaction generation prevents stale/overlapping polls
+from adopting later partial work. All candidates are parsed and generator-tested
+before any retiring group is removed. Group operations reuse the normal
+ownership checks, receipt CAS, recursive tree comparison and batched lifecycle
+operations. The parent's applied revision advances only after all groups succeed.
+If activation fails midway, already successful groups can remain updated; the
+next poll resumes from their receipts, including after controller recreation.
+This is **not** an atomic application transaction across different groups.
+
+Keep the Git object cache and host control state for recovery. Missing historical
+objects or invalid receipts fail closed rather than guessing ownership. The
+parent inventory is bounded to 512 KiB; the existing per-bundle file/byte limits
+still apply. ``cleanupOnRemoval`` uses the recorded child ownership journal,
+not a scan of arbitrary host directories. Switching between exact-directory
+and scanning modes is an ownership change; enable cleanup of the old method or
+perform an explicit migration. Do not use both modes over overlapping paths.
+
+Automatic target-level ``rollback`` / bad-commit tracking is not supported in
+scanning mode; configuration must not silently request that policy. Use a new
+Git commit to restore the desired groups. Exact-directory mode keeps its existing
+recovery behavior.
+
 Host access and rootless operation
 ----------------------------------
 
