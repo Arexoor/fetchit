@@ -153,9 +153,23 @@ find "$host$live" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 cp -a --no-preserve=context,xattr "$host$stage/." "$host$live/"
 systemctl_cmd daemon-reload
 if [ "$start" = true ]; then
- printf '%s\n' "$new_services" | while IFS= read -r unit; do
-  [ -n "$unit" ] || continue
-  if printf '%s\n' "$restart_units" | grep -Fx -- "$unit" >/dev/null; then systemctl_cmd restart "$unit"; else systemctl_cmd start "$unit"; fi
+ # Queue coupled restarts together, before starting remaining (e.g. volume
+ # and network) units. Dependencies pull prerequisites into the restart job;
+ # starting them first could also pull consumers in before their restart.
+ for action in restart start; do
+  set --
+  while IFS= read -r unit; do
+   [ -n "$unit" ] || continue
+   if printf '%s\n' "$restart_units" | grep -Fx -- "$unit" >/dev/null; then
+    [ "$action" = restart ] || continue
+   else
+    [ "$action" = start ] || continue
+   fi
+   set -- "$@" "$unit"
+  done <<EOF
+$new_services
+EOF
+  [ "$#" -eq 0 ] || systemctl_cmd "$action" -- "$@"
  done
 fi
 printf '%s\n' "$new_services" >"$host$control/installed.tmp"
