@@ -2,11 +2,10 @@
 
 This fork owns the experimental source, build recipes and portable development tests.
 Upstream: https://github.com/containers/fetchit, base commit
-`2089acc2efeeccb44dfb4549fab3bff1f7cb815d`. The only runtime source change is
-`pkg/engine/quadlet-host.sh`: retain Podman 5.7+ within major 5, allow major 6
-with an explicit warning, reject other majors. This is **not official Podman 6
-support**, a Go-bindings port, or a production release. The helper bytes are
-identical to the previously exercised experimental build.
+`2089acc2efeeccb44dfb4549fab3bff1f7cb815d`. This branch includes experimental
+Podman 6 gating, folder-scoped reconciliation, batched lifecycle operations, and
+conditional generic helper prefetch. This is **not official Podman 6 support**
+or a Go-bindings port; the bindings remain on major 5.
 
 ## Build (Linux amd64, rootless Podman)
 
@@ -77,13 +76,15 @@ Run portable tests using `python3 -m unittest discover -s tests -p 'test_*.py' -
 
 ## Runtime caveats
 
-Set Quadlet `helperImage` to the verified immutable image reference. The upstream
-generic helper/prefetch path still uses `quay.io/fetchit/fetchit:latest`; this
-snapshot does not change it. Any local alias is a deployment decision, not a
-published upstream image. Known deployment observations include bundle restarts
-on unrelated branch commits with restart enabled and an unresolved shutdown
-cleanup timeout in an offline/early-boot scenario. Do not interpret this snapshot
-as fixing those issues. A GitHub source pre-release is not a registry publication.
+Set Quadlet `helperImage` to the same reviewed version tag as the engine.
+Quadlet resolves/pulls that helper only when deploying (cached images are reused).
+Empty or online Quadlet-only configurations no longer prefetch the generic
+`quay.io/fetchit/fetchit:latest` image. Leaving `helperImage` unset still selects
+that upstream default at deployment; no local alias is required for explicit
+helpers. Legacy FileTransfer/Systemd and device-backed paths retain generic
+helper prefetch. An explicit Quadlet helper does not override those legacy paths.
+A GitHub source release is not a registry publication. Reboot and full target
+FCOS acceptance remain separate from local tests.
 
 ## Future upstream integration and release workflow
 

@@ -165,6 +165,26 @@ func readConfig(v *viper.Viper) (*FetchitConfig, bool, error) {
 	return config, true, nil
 }
 
+// Quadlet fetches its selected helper lazily in deploy. Only legacy host-copy
+// and device paths need the generic helper before processing their targets.
+func (fc *FetchitConfig) needsGenericHelper() bool {
+	if fc.ConfigReload != nil && fc.ConfigReload.Device != "" {
+		return true
+	}
+	for _, image := range fc.Images {
+		if image != nil && image.Url == "" && image.ImagePath != "" {
+			return true
+		}
+	}
+	for _, target := range fc.TargetConfigs {
+		if len(target.FileTransfer) > 0 || len(target.Systemd) > 0 ||
+			(target.Disconnected && target.Device != "") {
+			return true
+		}
+	}
+	return false
+}
+
 func (fc *FetchitConfig) populateFetchit(config *FetchitConfig) *Fetchit {
 	fetchit = newFetchit()
 	ctx := fc.runtimeContext()
@@ -185,11 +205,13 @@ func (fc *FetchitConfig) populateFetchit(config *FetchitConfig) *Fetchit {
 	fetchit.conn = fc.conn
 	fetchit.lifetime = ctx
 
-	if err := detectOrFetchImage(fc.conn, fetchitImage, false); err != nil {
-		if ctx.Err() != nil {
-			return fetchit
+	if config.needsGenericHelper() {
+		if err := detectOrFetchImage(fc.conn, fetchitImage, false); err != nil {
+			if ctx.Err() != nil {
+				return fetchit
+			}
+			cobra.CheckErr(err)
 		}
-		cobra.CheckErr(err)
 	}
 
 	// look for a ConfigURL, only find the first
