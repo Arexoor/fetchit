@@ -261,7 +261,11 @@ esac
 			if !strings.Contains(lines, "stop old.service\ndaemon-reload\n") {
 				t.Fatalf("wrong lifecycle order: %s", lines)
 			}
-			if !strings.Contains(lines, "start new.service") && !strings.Contains(lines, "restart new.service") {
+			action := "start"
+			if failure == "restart" {
+				action = "restart"
+			}
+			if !strings.Contains(lines, "\n"+action+" -- new.service\n") {
 				t.Fatalf("new unit not activated: %s", lines)
 			}
 			nextRevision = strings.Repeat("2", 40)
