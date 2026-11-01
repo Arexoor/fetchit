@@ -54,10 +54,10 @@ type quadletInventory struct {
 func shellData(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
 func (q *Quadlet) ownsSubtargetPath(p string) bool {
-	if p == "" || p == "." || path.IsAbs(p) || path.Clean(p) != p || strings.HasPrefix(p, "..") || strings.ContainsAny(p, "\x00\r\n") {
+	if p == "" || p == "." || p == ".." || path.IsAbs(p) || path.Clean(p) != p || strings.HasPrefix(p, "../") || strings.ContainsAny(p, "\x00\r\n") {
 		return false
 	}
-	parent := q.GetTargetPath()
+	parent := path.Clean(q.GetTargetPath())
 	return parent == "." || (p != parent && strings.HasPrefix(p, parent+"/"))
 }
 

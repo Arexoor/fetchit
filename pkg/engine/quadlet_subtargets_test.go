@@ -255,11 +255,54 @@ func TestQuadletSubtargetRejectInventoryTrailer(t *testing.T) {
 	}
 }
 
+func TestQuadletSubtargetRejectUnsafeDiscoveredPath(t *testing.T) {
+	r, q := quadletTestRepo(t)
+	q.ScanDepth = 1
+	h := quadletCommit(t, r, map[string]string{"badpath/a.container": "[Container]\nImage=example.test/a\n"})
+	commit, err := r.CommitObject(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := commit.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := root.Tree("bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree.Entries[0].Name = "bad\npath"
+	store := func(value interface {
+		Encode(plumbing.EncodedObject) error
+	}) plumbing.Hash {
+		obj := r.Storer.NewEncodedObject()
+		if err := value.Encode(obj); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := r.Storer.SetEncodedObject(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	hash := store(tree)
+	for i := range root.Entries {
+		if root.Entries[i].Name == "bundle" {
+			root.Entries[i].Hash = hash
+		}
+	}
+	commit.TreeHash = store(root)
+	h = store(commit)
+	if _, err := q.discoverSubtargets(h.String()); err == nil {
+		t.Fatal("unsafe discovered path would poison persisted ownership")
+	}
+}
+
 func TestQuadletSubtargetOwnedPathValidation(t *testing.T) {
 	for _, tc := range []struct {
 		parent, child string
 		want          bool
-	}{{".", "a", true}, {"services", "services/a", true}, {"services", "services/../outside", false}, {"services", "services", false}, {".", "../outside", false}} {
+	}{{".", "a", true}, {".", "..hidden", true}, {"./services", "services/a", true}, {"services", "services/a", true}, {"services", "services/../outside", false}, {"services", "services", false}, {".", "../outside", false}} {
 		_, q := quadletTestRepo(t)
 		q.TargetPath = tc.parent
 		checker, ok := interface{}(q).(interface{ ownsSubtargetPath(string) bool })
