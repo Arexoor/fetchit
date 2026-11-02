@@ -197,7 +197,12 @@ func TestQuadletSubtargetsIntegration(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(q.HostConfigHome, "containers/systemd", aNamespace, prefix+"-data.volume")); err != nil {
 		t.Fatalf("resource definition retired with last container: %v", err)
 	}
-	command("systemctl", "--user", "is-active", prefix+"-data-volume.service")
+	// Host Podman emits .volume as oneshot without RemainAfterExit: inactive is
+	// normal after successful creation. Verify the retained definition and data.
+	if state := command("systemctl", "--user", "show", prefix+"-data-volume.service", "--property=LoadState", "--value"); state != "loaded" {
+		t.Fatalf("retained volume service is not loaded: %s", state)
+	}
+	command("podman", "volume", "exists", prefix+"-data")
 	files = map[string]string{"README": "all groups removed"}
 	poll(false)
 	out, err := exec.Command("podman", "container", "exists", b).CombinedOutput()
