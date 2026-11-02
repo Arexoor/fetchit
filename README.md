@@ -140,7 +140,7 @@ targetConfigs:
 ```
 
 This rootful example polls `services` for direct child directories containing a
-direct `.container` file. Each is reconciled independently; a parent README
+direct `.container`, `.volume` or `.network` file. Each is reconciled independently; a parent README
 change does not restart applications. `scanDepth` defaults to `0` (the existing
 exact-directory mode). Positive depths select disjoint group roots at depths
 1 through N, never the parent itself. `targetPath: service` would instead select

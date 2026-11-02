@@ -364,7 +364,8 @@ func (q *Quadlet) discoverSubtargets(revision string) ([]string, error) {
 		if item.depth > 0 {
 			selected := false
 			for _, entry := range item.tree.Entries {
-				if entry.Mode != filemode.Dir && path.Ext(entry.Name) == ".container" {
+				ext := path.Ext(entry.Name)
+				if entry.Mode != filemode.Dir && (ext == ".container" || ext == ".volume" || ext == ".network") {
 					selected = true
 					break
 				}

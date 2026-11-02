@@ -92,7 +92,28 @@ func TestQuadletSubtargetsIntegration(t *testing.T) {
 		t.Logf("Preserved synthetic data volume: %s-data", prefix)
 	})
 	poll(false)
-	files["a/"+a1+".container"] = source(a1)
+	// Resource-only groups are discovered on the same first deployment as apps.
+	resource := prefix + "-shared"
+	files["00-resources/"+resource+".volume"] = "[Volume]\nVolumeName=" + resource + "\n"
+	files["00-resources/"+resource+".network"] = "[Network]\nNetworkName=" + resource + "\n"
+	// Native sibling .volume/.network references cannot pass isolated preflight.
+	// Assert the actual generator failure before testing supported literal names.
+	consumer := strings.Replace(source(a1), "Network=none", "Network="+resource+".network\nVolume="+resource+".volume:/data", 1)
+	files["a/"+a1+".container"] = consumer
+	poll(true)
+	child := q.subtargetAt("bundle/a")
+	ns, _ := child.hostIdentity()
+	validation, err := os.ReadFile(filepath.Join(q.HostConfigHome, "."+ns, "validation.log"))
+	if err != nil || !strings.Contains(string(validation), resource) || !strings.Contains(string(validation), "not found") {
+		t.Fatalf("expected isolated generator dependency diagnostic: %s %v", validation, err)
+	}
+	t.Logf("cross-group native reference preflight rejected: %s", validation)
+	if err := exec.Command("podman", "volume", "exists", resource).Run(); err == nil {
+		t.Fatal("preflight failure applied resources")
+	}
+	// Explicit runtime names avoid generator file lookup; order is alphabetical,
+	// not a dependency graph. The consumer asserts both resources already exist.
+	files["a/"+a1+".container"] = strings.Replace(source(a1), "Network=none", "Network="+resource+"\nVolume="+resource+":/data", 1) + "ExecStartPre=/usr/bin/podman volume exists " + resource + "\nExecStartPre=/usr/bin/podman network exists " + resource + "\n"
 	files["a/"+a2+".container"] = source(a2)
 	files["b/"+b+".container"] = source(b)
 	files["a/data.volume"] = "[Volume]\nVolumeName=" + prefix + "-data\n"
@@ -170,11 +191,29 @@ func TestQuadletSubtargetsIntegration(t *testing.T) {
 	if id := command("podman", "inspect", "--format={{.Id}}", b); id != after[2] {
 		t.Fatal("removing A restarted B")
 	}
+	// Removing the last container does not retire a group with a direct volume.
+	aChild := q.subtargetAt("bundle/a")
+	aNamespace, _ := aChild.hostIdentity()
+	if _, err := os.Stat(filepath.Join(q.HostConfigHome, "containers/systemd", aNamespace, prefix+"-data.volume")); err != nil {
+		t.Fatalf("resource definition retired with last container: %v", err)
+	}
+	command("systemctl", "--user", "is-active", prefix+"-data-volume.service")
 	files = map[string]string{"README": "all groups removed"}
 	poll(false)
 	out, err := exec.Command("podman", "container", "exists", b).CombinedOutput()
 	if err == nil {
 		t.Fatalf("deleted group still exists: %s", out)
 	}
-	t.Log("PASS: dynamic empty/add, isolation, recursive config/credentials, restart, invalid preservation, rename, empty-container cleanup, deletion and data retention")
+	command("podman", "volume", "exists", resource)
+	command("podman", "network", "exists", resource)
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "retain synthetic data" {
+		t.Fatalf("data marker lost after final resource removal: %q %v", got, err)
+	}
+	resourceChild := q.subtargetAt("bundle/00-resources")
+	resourceNamespace, _ := resourceChild.hostIdentity()
+	if _, err := os.Stat(filepath.Join(q.HostConfigHome, "containers/systemd", resourceNamespace, resource+".network")); !os.IsNotExist(err) {
+		t.Fatalf("retired resource group source remains: %v", err)
+	}
+	t.Logf("Preserved synthetic volume and network: %s", resource)
+	t.Log("PASS: resource-only first deployment before consumer, isolated native-reference rejection, dynamic discovery, group isolation, restart, invalid preservation, rename, last-container retention, final-unit cleanup and data retention")
 }

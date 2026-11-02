@@ -90,7 +90,8 @@ rootless operation replace ``root: true`` with the explicit host paths below.
 No per-child configuration entries are created.
 
 * ``scanDepth: 1`` examines direct child directories only. A child qualifies only
-  when it contains a **direct** ``.container`` file. ``services/a/a.container``
+  when it contains a **direct** ``.container``, ``.volume`` or ``.network`` file.
+  ``services/a/a.container``
   selects ``services/a``; ``services/a/deep/a.container`` does not select it.
 * ``scanDepth: N`` considers depths 1 through N inclusive, counting directory
   edges below the parent. The parent itself is never selected in scanning mode.
@@ -101,12 +102,15 @@ No per-child configuration entries are created.
   that group's recursive content remains part of its bundle tree. A nested
   Quadlet source unit inside an already selected group is still a validation
   error, not a second group or silently ignored file.
-* A directory containing only ``.volume`` / ``.network`` files is not a group.
-  Those files are included when a sibling ``.container`` exists. Removing the
-  final direct ``.container`` retires the **whole** group, even if supporting
-  files or resource definitions remain. Removing the directory has the same
-  effect. Owned runtime units and deployed supporting files are cleaned up;
-  persistent data volumes are not deleted.
+* Resource-only directories containing direct ``.volume`` or ``.network`` files
+  are groups. Config/drop-in-only directories and other unit extensions alone
+  do not qualify. Removing the final direct **recognized unit** (``.container``,
+  ``.volume`` or ``.network``) retires the whole group, even if auxiliary files
+  remain. Removing only the last container cleans up that container but keeps
+  remaining resource definitions. Removing the directory also retires the group.
+  Owned runtime units and deployed supporting files are cleaned up; persistent
+  data volumes and networks are not deleted by FetchIt. Resources remain
+  start-only, not restartable.
 * An empty/missing parent is idle, not disabled: subsequent polls discover new
   groups automatically. Files outside selected groups, including a parent
   README, do not restart groups. Recursive config, drop-in, executable-mode or
@@ -117,7 +121,22 @@ include a digest of the parent identity and child path. Folder renames are
 remove/add operations, never implicit ownership or credential-namespace
 migrations. Generated systemd service names and container names must still be
 unique on the host: separate ownership directories are not systemd namespaces.
-Groups must not rely on cross-group restart ordering.
+Groups must not rely on cross-group restart ordering. Retired groups are removed
+first; desired groups are applied in alphabetical path order. You may explicitly
+name a resource directory ``00-resources`` to apply it before application groups;
+FetchIt never adds prefixes or constructs a dependency graph.
+
+Discovery does **not** add cross-group Quadlet file-reference support. Every
+candidate is generator-validated separately with ``QUADLET_UNIT_DIRS`` restricted
+to its staged bundle, before any group is applied. Thus ``Volume=shared.volume:/data``
+or ``Network=shared.network`` in another group fails preflight, including on first
+boot; alphabetical application cannot fix this. Keep native file references and
+resource definitions in the same group. Alternatively, explicitly name resources
+with ``VolumeName=`` / ``NetworkName=`` and use those literal runtime names in
+consumers (without the ``.volume`` / ``.network`` suffix). This avoids generator
+file lookup but does not create systemd dependency edges or guarantee resource
+availability after reboot. Boot ordering, readiness, and coordinated changes
+remain the operator's responsibility.
 
 The host keeps a private parent inventory and per-child ownership receipts.
 The parent inventory is read before fetching Git, then checked under a parent

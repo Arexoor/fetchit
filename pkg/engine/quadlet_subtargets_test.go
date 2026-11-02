@@ -99,10 +99,14 @@ else: sys.exit(90)
 	readlog := func() string { b, _ := os.ReadFile(log); os.WriteFile(log, nil, 0644); return string(b) }
 	poll(false)
 	files["a/a.container"] = "[Container]\nImage=example.com/a\n"
+	files["a/data.volume"] = "[Volume]\n"
+	files["a/lan.network"] = "[Network]\n"
+	files["00-resources/shared.volume"] = "[Volume]\n"
+	files["00-resources/shared.network"] = "[Network]\n"
 	files["b/b.container"] = "[Container]\nImage=example.com/b\n"
 	poll(false)
-	if got := readlog(); !strings.Contains(got, "restart -- a.service") || !strings.Contains(got, "restart -- b.service") {
-		t.Fatalf("initial activation: %s", got)
+	if got := readlog(); !strings.Contains(got, "restart -- a.service") || !strings.Contains(got, "restart -- b.service") || !strings.Contains(got, "start -- shared-network.service shared-volume.service") || strings.Index(got, "start -- shared-") > strings.Index(got, "restart -- a.service") || strings.Contains(got, "restart -- shared-") {
+		t.Fatalf("initial alphabetical activation/start-only resources: %s", got)
 	}
 	stale := lastBatch
 	files["a/credentials/test.cred"] = "synthetic-one"
@@ -144,8 +148,27 @@ else: sys.exit(90)
 	files["README"] = "retry"
 	poll(false)
 	if got := readlog(); !strings.Contains(got, "stop a.service") || strings.Contains(got, "stop b.service") {
-		t.Fatalf("empty-container cleanup isolation: %s", got)
+		t.Fatalf("removed-container cleanup isolation: %s", got)
 	}
+	aChild := q.subtargetAt("bundle/a")
+	aNamespace, _ := aChild.hostIdentity()
+	liveA := filepath.Join(host, "etc/containers/systemd", aNamespace)
+	for _, file := range []string{"data.volume", "lan.network", "credentials/test.cred"} {
+		if _, err := os.Stat(filepath.Join(liveA, file)); err != nil {
+			t.Fatalf("last container removal retired resource group %s: %v", file, err)
+		}
+	}
+	delete(files, "a/data.volume")
+	poll(false)
+	if _, err := os.Stat(filepath.Join(liveA, "lan.network")); err != nil {
+		t.Fatal("network-only group retired", err)
+	}
+	delete(files, "a/lan.network")
+	poll(false)
+	if _, err := os.Stat(filepath.Join(liveA, "credentials/test.cred")); !os.IsNotExist(err) {
+		t.Fatal("final recognized unit removal did not retire auxiliary content", err)
+	}
+	readlog()
 	// Different interrupted transactions must never reuse the parent's CAS token.
 	os.WriteFile(filepath.Join(host, "fail"), nil, 0644)
 	files["c/c.container"] = "[Container]\nImage=example.com/c\n"
@@ -374,11 +397,20 @@ func TestQuadletSubtargetIdentityAndQuoting(t *testing.T) {
 func TestQuadletSubtargetDiscoveryDepth(t *testing.T) {
 	r, q := quadletTestRepo(t)
 	revision := quadletCommit(t, r, map[string]string{
-		"root.container":            "[Container]\nImage=example.com/root\n",
-		"a/a.container":             "[Container]\nImage=example.com/a\n",
-		"a/nested/hidden.container": "[Container]\nImage=example.com/hidden\n",
-		"branch/b/b.container":      "[Container]\nImage=example.com/b\n",
-		"volume-only/data.volume":   "[Volume]\n",
+		"root.container":                    "[Container]\nImage=example.com/root\n",
+		"a/a.container":                     "[Container]\nImage=example.com/a\n",
+		"a/nested/hidden.container":         "[Container]\nImage=example.com/hidden\n",
+		"branch/b/b.container":              "[Container]\nImage=example.com/b\n",
+		"volume-only/data.volume":           "[Volume]\n",
+		"network-only/lan.network":          "[Network]\n",
+		"mixed/app.container":               "[Container]\nImage=example.com/app\n",
+		"mixed/data.volume":                 "[Volume]\n",
+		"mixed/lan.network":                 "[Network]\n",
+		"branch/resources/data.volume":      "[Volume]\n",
+		"config-only/app.conf":              "auxiliary",
+		"dropins/app.container.d/10.conf":   "auxiliary",
+		"other/app.pod":                     "[Pod]\n",
+		"volume-only/nested/hidden.network": "[Network]\n",
 	})
 	if _, err := q.subtargetAt("bundle/a").bundle(revision); err == nil {
 		t.Fatal("nested source units inside selected group must still fail validation")
@@ -387,8 +419,9 @@ func TestQuadletSubtargetDiscoveryDepth(t *testing.T) {
 		depth int
 		want  []string
 	}{
-		{0, []string{"bundle"}}, {1, []string{"bundle/a"}},
-		{2, []string{"bundle/a", "bundle/branch/b"}},
+		{0, []string{"bundle"}},
+		{1, []string{"bundle/a", "bundle/mixed", "bundle/network-only", "bundle/volume-only"}},
+		{2, []string{"bundle/a", "bundle/branch/b", "bundle/branch/resources", "bundle/mixed", "bundle/network-only", "bundle/volume-only"}},
 	} {
 		// Reflection keeps RED a behavioral failure on the unextended config type.
 		field := reflect.ValueOf(q).Elem().FieldByName("ScanDepth")

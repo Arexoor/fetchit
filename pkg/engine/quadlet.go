@@ -297,7 +297,8 @@ func (q *Quadlet) bundle(hash plumbing.Hash) (quadletBundle, error) {
 	if q.subtarget {
 		selected := false
 		for _, entry := range tree.Entries {
-			if entry.Mode != filemode.Dir && path.Ext(entry.Name) == ".container" {
+			ext := path.Ext(entry.Name)
+			if entry.Mode != filemode.Dir && (ext == ".container" || ext == ".volume" || ext == ".network") {
 				selected = true
 				break
 			}
