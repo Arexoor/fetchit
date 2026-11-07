@@ -279,7 +279,7 @@ printf '\n'
 		for _, arg := range args {
 			cmd += " " + shellData(arg)
 		}
-		return cmd + "\n"
+		return "printf '%s\\n' " + shellData("group-path="+e.child.GetTargetPath()+" operation="+operation) + " >&2\n" + cmd + "\n"
 	}
 	for _, e := range entries {
 		// An empty archive directory still needs to exist for removal staging.
@@ -317,7 +317,7 @@ printf '\n'
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	err = run(ctx, conn, quadletPlan{parent: parent, runtime: runtime, namespace: namespace, home: home, desired: quadletBundle{files: files, modes: modes}, command: []string{"-ceu", "exec sh -eu \"${FETCHIT_QUADLET_BUNDLE:-/tmp/quadlet-bundle}/parent.sh\""}})
+	err = run(ctx, conn, quadletPlan{parent: parent, runtime: runtime, namespace: namespace, home: home, desiredRevision: latest.String(), desired: quadletBundle{files: files, modes: modes}, command: []string{"-ceu", "exec sh -eu \"${FETCHIT_QUADLET_BUNDLE:-/tmp/quadlet-bundle}/parent.sh\""}})
 	if err != nil {
 		return err
 	}

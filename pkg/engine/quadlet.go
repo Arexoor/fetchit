@@ -33,6 +33,14 @@ const quadletMaxFiles = 4096
 //go:embed quadlet-host.sh
 var quadletHostScript string
 
+//go:embed quadlet-diagnostics.sh
+var quadletDiagnosticsScript string
+
+func quadletDiagnosticCommand(p quadletPlan, operation string, command []string) []string {
+	args := []string{"-ceu", quadletDiagnosticsScript, "quadlet-diagnostics", p.parent, operation, p.namespace, p.desiredRevision, "/bin/sh"}
+	return append(args, command...)
+}
+
 // Quadlet deploys a dedicated Git directory as a host-managed Quadlet bundle.
 // Rootless deployments require explicit host paths; container HOME/UID are not used.
 type Quadlet struct {
@@ -506,6 +514,7 @@ func (q *Quadlet) deploy(ctx, conn context.Context, p quadletPlan) (resultErr er
 	if len(p.command) > 0 {
 		s.Command = p.command
 	}
+	s.Command = quadletDiagnosticCommand(p, operation, s.Command)
 	s.Env = map[string]string{"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": p.home}
 	if p.runtime != "" {
 		s.Env["XDG_CONFIG_HOME"] = p.parent
@@ -544,11 +553,15 @@ func (q *Quadlet) deploy(ctx, conn context.Context, p quadletPlan) (resultErr er
 	// contain inline credentials. Inspection accepts only a bounded protocol
 	// record, validated by hostBaseline; application emits a generic status.
 	logs := make(chan string)
+	diagnosticsUnavailable := false
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		seen := false
 		for line := range logs {
+			if strings.TrimSpace(line) == "FETCHIT_DIAGNOSTICS_UNAVAILABLE" {
+				diagnosticsUnavailable = true
+			}
 			if p.receipt != nil && strings.HasPrefix(line, "FETCHIT_RECEIPT ") {
 				limit := 640
 				if len(p.command) > 0 {
@@ -567,7 +580,11 @@ func (q *Quadlet) deploy(ctx, conn context.Context, p quadletPlan) (resultErr er
 	close(logs)
 	<-done
 	if code != 0 {
-		return fmt.Errorf("Quadlet helper exited with status %d; inspect private host diagnostics", code)
+		diagnosticPath := path.Join(p.parent, "fetchit", "quadlet.log")
+		if diagnosticsUnavailable {
+			return fmt.Errorf("Quadlet helper exited with status %d; cannot create private diagnostics at %s (check directory permissions, symlinks and free space)", code, diagnosticPath)
+		}
+		return fmt.Errorf("Quadlet helper %s exited with status %d; private host diagnostics: %s", operation, code, diagnosticPath)
 	}
 	return logErr
 }

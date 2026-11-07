@@ -18,6 +18,21 @@ control="$parent/.${namespace}"
 live="$parent/systemd/$namespace"
 if [ -n "$runtime" ]; then live="$parent/containers/systemd/$namespace"; fi
 stage="$control/desired"
+if [ "${FETCHIT_QUADLET_DIAGNOSTICS:-false}" = true ]; then
+ printf 'group=%s operation=%s revision=%s begin\n' "$namespace" "$operation" "$desired_revision" >&2
+ validation_started=false
+ diagnostic_finish() {
+  status=$?
+  trap - EXIT
+  if [ "$validation_started" = true ]; then
+   printf 'group=%s generator diagnostics:\n' "$namespace" >&2
+   cat "$host$control/validation.log" >&2 || :
+  fi
+  printf 'group=%s operation=%s revision=%s exit=%s\n' "$namespace" "$operation" "$desired_revision" "$status" >&2
+  exit "$status"
+ }
+ trap diagnostic_finish EXIT
+fi
 fail() { echo "$*" >&2; exit 1; }
 hostcmd() { chroot "$host" /usr/bin/env PATH=/usr/sbin:/usr/bin:/sbin:/bin "$@"; }
 write_receipt() {
@@ -114,6 +129,7 @@ cp -a --no-preserve=context,xattr "${FETCHIT_QUADLET_BUNDLE:-/tmp/quadlet-bundle
 # (including legacy permissive logs) before writing; never dump generated units.
 rm -f "$host$control/validation.log"
 (umask 077; : >"$host$control/validation.log")
+validation_started=true
 if [ -n "$runtime" ]; then
  hostcmd QUADLET_UNIT_DIRS="$stage" "$generator" --user --dryrun >"$host$control/validation.log" 2>&1 || fail 'Quadlet validation failed; inspect private host validation.log'
 else

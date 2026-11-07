@@ -438,10 +438,26 @@ For the rootful example:
 
 For rootless operation, use ordinary ``podman`` and add ``--user`` to the
 ``systemctl`` and ``journalctl`` commands. ``SourcePath`` identifies the managed
-Quadlet subdirectory, which also contains supporting files. The helper writes
-``validation.log`` in a sibling hidden control directory beneath the configured
-parent. FetchIt logs contain generator output when validation fails and the
-helper's exit status when a host command fails.
+Quadlet subdirectory, which also contains supporting files. Every helper captures
+its stdout and stderr automatically in one private host log, before inventory or
+validation starts: ``<hostConfigHome>/fetchit/quadlet.log`` for rootless operation
+(normally ``~/.config/fetchit/quadlet.log``), or
+``/etc/containers/fetchit/quadlet.log`` for rootful operation. Read that file on the
+host as the deployment user. It includes timestamps, operation/revision markers,
+subgroup paths and exit statuses, generator diagnostics, and host command errors.
+FetchIt's ordinary log reports only the status and this exact path, never raw
+helper output. The file survives helper removal; inspection does not erase the
+preceding failure. Existing ``validation.log`` files remain available as well.
+
+The central file is mode 0600. A new ``fetchit`` directory is mode 0700; existing
+config-directory permissions are left unchanged. Symlinked log directories/files
+are rejected. Helpers sharing a config home serialize diagnostic capture. Each
+operation retains the last 1 MiB of preceding history plus its own complete output;
+the current operation is not size-limited. Follow replacement with ``tail -F``,
+not ``tail -f``. Capture setup failures report that the file could not be created;
+pre-start Podman API failures still report the API error (no helper has run).
+**Private diagnostics may contain credentials or generated unit contents. Do not
+paste the whole file into tickets or chat; redact relevant excerpts first.**
 
 If a service is not generated, inspect the validation log for missing required
 keys or options unsupported by the host's Podman version. If startup fails, inspect
